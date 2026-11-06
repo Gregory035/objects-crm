@@ -1,33 +1,652 @@
-import React,{useEffect,useState} from 'react';
-import {createRoot} from 'react-dom/client';
-import {createClient,Session} from '@supabase/supabase-js';
-import './style.css';
-const db=createClient(import.meta.env.VITE_SUPABASE_URL,import.meta.env.VITE_SUPABASE_ANON_KEY);
-type Profile={id:string;name:string;role:string};
-type Obj={id:string;name:string;address:string};
-type Task={id:string;title:string;description:string;object_id:string;assignee_id:string;author_id:string;status:string;created_at:string};
-type History={id:string;actor_id:string;from_status:string|null;to_status:string;comment:string|null;created_at:string};
-const labels:Record<string,string>={new:'Новая',in_progress:'В работе',review:'На проверке',accepted:'Принята',rework:'На доработке'};
-const date=(s:string)=>new Date(s).toLocaleString('ru-RU');
-function App(){
- const [session,setSession]=useState<Session|null>(null),[ready,setReady]=useState(false),[profile,setProfile]=useState<Profile|null>(null),[people,setPeople]=useState<Profile[]>([]),[objects,setObjects]=useState<Obj[]>([]),[tasks,setTasks]=useState<Task[]>([]),[history,setHistory]=useState<History[]>([]),[route,setRoute]=useState(location.hash.slice(1)||'objects'),[error,setError]=useState(''),[busy,setBusy]=useState(false),[loading,setLoading]=useState(false),[editor,setEditor]=useState<{kind:'object'|'task';value?:Obj|Task}|null>(null),[comment,setComment]=useState('');
- const manager=profile?.role==='manager'; const [kind,id]=route.split('/'); const object=objects.find(x=>x.id===id); const task=tasks.find(x=>x.id===id);
- const go=(r:string)=>{location.hash=r;setEditor(null);setComment('');setError('')};
- useEffect(()=>{const f=()=>setRoute(location.hash.slice(1)||'objects');window.addEventListener('hashchange',f);db.auth.getSession().then(({data,error})=>{if(error)setError(error.message);setSession(data.session);setReady(true)});const {data}=db.auth.onAuthStateChange((_e,s)=>{setSession(s);if(!s){setProfile(null);setTasks([]);setObjects([]);setPeople([])}});return()=>{window.removeEventListener('hashchange',f);data.subscription.unsubscribe()}},[]);
- async function refresh(){if(!session)return;setLoading(true);try{const [p,o,t]=await Promise.all([db.from('profiles').select('*'),db.from('objects').select('*').is('deleted_at',null).order('name'),db.from('tasks').select('*').is('deleted_at',null).order('created_at',{ascending:false})]);for(const r of [p,o,t])if(r.error)throw r.error;setPeople(p.data!);setProfile(p.data!.find(x=>x.id===session.user.id)||null);setObjects(o.data!);setTasks(t.data!)}catch(e){setError((e as Error).message)}finally{setLoading(false)}}
- useEffect(()=>{void refresh()},[session?.user.id]);
- useEffect(()=>{setHistory([]);if(kind==='task'&&id&&session)db.from('task_history').select('*').eq('task_id',id).order('created_at').then(({data,error})=>{if(error)setError(error.message);else setHistory(data||[])})},[kind,id,tasks,session?.user.id]);
- async function action(fn:()=>PromiseLike<{error:any}>){if(busy)return;setBusy(true);setError('');try{const r=await fn();if(r.error)throw r.error;await refresh();setEditor(null);setComment('')}catch(e){setError((e as Error).message)}finally{setBusy(false)}}
- const person=(id:string)=>people.find(p=>p.id===id)?.name||'Сотрудник';
- const badge=(s:string)=><span className={'badge '+s}>{labels[s]}</span>;
- const taskList=(list:Task[])=>list.length?<div className="list">{list.map(t=><button className="row" key={t.id} onClick={()=>go('task/'+t.id)}><div><strong>{t.title}</strong><small>{objects.find(o=>o.id===t.object_id)?.name} · {person(t.assignee_id)}</small></div>{badge(t.status)}<span aria-hidden>→</span></button>)}</div>:<div className="empty">Задач пока нет</div>;
- if(!ready)return <main>Загрузка…</main>;
- if(!session)return <main className="login"><div className="brand">ОБЪЕКТЫ / ЗАДАЧИ</div><h1>Всё начинается<br/>с ясной задачи.</h1><p>Рабочее пространство строительной команды</p><form onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);void action(()=>db.auth.signInWithPassword({email:String(f.get('email')),password:String(f.get('password'))}))}}><h2>Вход в систему</h2><label>Email<input name="email" type="email" autoComplete="username" required/></label><label>Пароль<input name="password" type="password" autoComplete="current-password" required/></label>{error&&<p role="alert" className="error">{error==='Invalid login credentials'?'Проверьте email и пароль':error}</p>}<button className="primary" disabled={busy}>{busy?'Входим…':'Войти'}</button><small>Доступ выдаёт администратор команды.</small></form></main>;
- return <div className="app"><aside><div className="brand">ОБЪЕКТЫ<br/>И ЗАДАЧИ<span>Рабочее пространство</span></div><nav><button className={kind==='objects'||kind==='object'?'active':''} onClick={()=>go('objects')}>Объекты</button>{!manager&&<button className={kind==='mine'?'active':''} onClick={()=>go('mine')}>Мои задачи</button>}</nav><footer><strong>{profile?.name||session.user.email}</strong><small>{manager?'Постановщик':'Исполнитель'}</small><button onClick={()=>void action(()=>db.auth.signOut())}>Выйти</button></footer></aside><main><header><span>СТРОИТЕЛЬНАЯ КОМАНДА</span><button disabled={loading||busy} onClick={()=>void refresh()}>Обновить</button></header>{error&&<div role="alert" className="error">{error}</div>}{loading&&<p role="status">Обновляем данные…</p>}{!profile&&!loading?<p>Для аккаунта ещё не назначена роль. Обратитесь к администратору.</p>:<>
- {kind==='objects'&&<><div className="heading"><div><h1>Объекты</h1><p>Стройки, задачи и общий прогресс</p></div>{manager&&<button className="primary" onClick={()=>setEditor({kind:'object'})}>+ Новый объект</button>}</div><div className="grid">{objects.map(o=><button className="object" key={o.id} onClick={()=>go('object/'+o.id)}><span className="eyebrow">ОБЪЕКТ</span><h2>{o.name}</h2><p>{o.address}</p><div className="cardfoot"><span>{tasks.filter(t=>t.object_id===o.id).length} задач</span><span>Открыть →</span></div></button>)}</div>{!objects.length&&!loading&&<div className="empty">Доступных объектов пока нет</div>}</>}
- {kind==='mine'&&<><h1>Мои задачи</h1><p>Ваши задачи по всем объектам</p>{taskList(tasks.filter(t=>t.assignee_id===session.user.id))}</>}
- {kind==='object'&&(object?<><button onClick={()=>go('objects')}>← Все объекты</button><div className="heading"><div><h1>{object.name}</h1><p>{object.address}</p></div>{manager&&<div className="actions"><button onClick={()=>setEditor({kind:'object',value:object})}>Изменить</button><button className="danger" onClick={()=>{if(tasks.some(t=>t.object_id===id)){setError('Сначала удалите задачи объекта');return}if(confirm('Удалить объект из рабочего списка?'))void action(()=>db.from('objects').update({deleted_at:new Date().toISOString()}).eq('id',id))}}>Удалить</button><button className="primary" onClick={()=>setEditor({kind:'task'})}>+ Задача</button></div>}</div>{taskList(tasks.filter(t=>t.object_id===id))}</>:<p>Объект недоступен или удалён.</p>)}
- {kind==='task'&&(task?<><button onClick={()=>go('object/'+task.object_id)}>← К объекту</button><div className="heading"><h1>{task.title}</h1>{badge(task.status)}</div><article><p className="description">{task.description||'Описание не добавлено'}</p><dl><dt>Объект</dt><dd>{objects.find(o=>o.id===task.object_id)?.name}</dd><dt>Исполнитель</dt><dd>{person(task.assignee_id)}</dd><dt>Автор</dt><dd>{person(task.author_id)}</dd><dt>Создана</dt><dd>{date(task.created_at)}</dd></dl><div className="actions">{manager&&<><button onClick={()=>setEditor({kind:'task',value:task})}>Редактировать</button><button className="danger" onClick={()=>{if(confirm('Удалить задачу из рабочего списка? История сохранится.'))void action(()=>db.from('tasks').update({deleted_at:new Date().toISOString()}).eq('id',id))}}>Удалить</button></>}{!manager&&task.assignee_id===session.user.id&&['new','rework','in_progress'].includes(task.status)&&<button className="primary" disabled={busy} onClick={()=>void action(()=>db.from('tasks').update({status:task.status==='in_progress'?'review':'in_progress',transition_comment:null}).eq('id',id).eq('status',task.status))}>{task.status==='in_progress'?'Отправить на проверку':'Взять в работу'}</button>}</div>{manager&&task.status==='review'&&<div className="review"><label>Комментарий<textarea value={comment} onChange={e=>setComment(e.target.value)} placeholder="Для возврата на доработку укажите причину"/></label><div className="actions"><button className="primary" disabled={busy} onClick={()=>void action(()=>db.from('tasks').update({status:'accepted',transition_comment:comment}).eq('id',id).eq('status','review'))}>Принять задачу</button><button disabled={busy||!comment.trim()} onClick={()=>void action(()=>db.from('tasks').update({status:'rework',transition_comment:comment}).eq('id',id).eq('status','review'))}>Вернуть на доработку</button></div></div>}</article><h2>История статусов</h2><ol className="timeline">{history.map(h=><li key={h.id}><strong>{h.from_status?labels[h.from_status]+' → ':''}{labels[h.to_status]}</strong><small>{person(h.actor_id)} · {date(h.created_at)}</small>{h.comment&&<p className="description">{h.comment}</p>}</li>)}</ol></>:<p>Задача недоступна или удалена.</p>)}
- </>}{editor&&<div className="overlay"><section role="dialog" aria-modal="true" aria-labelledby="editor-title"><h2 id="editor-title">{editor.value?'Редактирование':editor.kind==='object'?'Новый объект':'Новая задача'}</h2><form onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);const value=Object.fromEntries(f.entries());const table=editor.kind==='object'?'objects':'tasks';void action(()=>editor.value?db.from(table).update(value).eq('id',editor.value.id):db.from(table).insert(value))}}><label>Название<input name={editor.kind==='object'?'name':'title'} required maxLength={200} defaultValue={editor.value?('name' in editor.value?editor.value.name:editor.value.title):''}/></label>{editor.kind==='object'?<label>Адрес<input name="address" required defaultValue={(editor.value as Obj)?.address||''}/></label>:<><label>Описание<textarea name="description" defaultValue={(editor.value as Task)?.description||''}/></label><label>Объект<select name="object_id" required defaultValue={(editor.value as Task)?.object_id||(kind==='object'?id:'')}>{objects.map(o=><option key={o.id} value={o.id}>{o.name}</option>)}</select></label><label>Исполнитель<select name="assignee_id" required defaultValue={(editor.value as Task)?.assignee_id||''}><option value="" disabled>Выберите сотрудника</option>{people.filter(p=>p.role==='worker').map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label></>}{error&&<p role="alert" className="error">{error}</p>}<div className="actions"><button type="submit" className="primary" disabled={busy}>Сохранить</button><button type="button" disabled={busy} onClick={()=>setEditor(null)}>Отмена</button></div></form></section></div>}</main></div>
+import React, { useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { createClient, Session } from "@supabase/supabase-js";
+import "./style.css";
+const db = createClient(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+);
+type Profile = { id: string; name: string; role: string };
+type Obj = { id: string; name: string; address: string };
+type Task = {
+  id: string;
+  title: string;
+  description: string;
+  object_id: string;
+  assignee_id: string;
+  author_id: string;
+  status: string;
+  created_at: string;
+};
+type History = {
+  id: string;
+  actor_id: string;
+  from_status: string | null;
+  to_status: string;
+  comment: string | null;
+  created_at: string;
+};
+const labels: Record<string, string> = {
+  new: "Новая",
+  in_progress: "В работе",
+  review: "На проверке",
+  accepted: "Принята",
+  rework: "На доработке",
+};
+const date = (s: string) => new Date(s).toLocaleString("ru-RU");
+function App() {
+  const [session, setSession] = useState<Session | null>(null),
+    [ready, setReady] = useState(false),
+    [profile, setProfile] = useState<Profile | null>(null),
+    [people, setPeople] = useState<Profile[]>([]),
+    [objects, setObjects] = useState<Obj[]>([]),
+    [tasks, setTasks] = useState<Task[]>([]),
+    [history, setHistory] = useState<History[]>([]),
+    [route, setRoute] = useState(location.hash.slice(1) || "objects"),
+    [error, setError] = useState(""),
+    [busy, setBusy] = useState(false),
+    [loading, setLoading] = useState(false),
+    [editor, setEditor] = useState<{
+      kind: "object" | "task";
+      value?: Obj | Task;
+    } | null>(null),
+    [comment, setComment] = useState("");
+  const manager = profile?.role === "manager";
+  const [kind, id] = route.split("/");
+  const object = objects.find((x) => x.id === id);
+  const task = tasks.find((x) => x.id === id);
+  const go = (r: string) => {
+    location.hash = r;
+    setEditor(null);
+    setComment("");
+    setError("");
+  };
+  useEffect(() => {
+    const f = () => setRoute(location.hash.slice(1) || "objects");
+    window.addEventListener("hashchange", f);
+    db.auth.getSession().then(({ data, error }) => {
+      if (error) setError(error.message);
+      setSession(data.session);
+      setReady(true);
+    });
+    const { data } = db.auth.onAuthStateChange((_e, s) => {
+      setSession(s);
+      if (!s) {
+        setProfile(null);
+        setTasks([]);
+        setObjects([]);
+        setPeople([]);
+      }
+    });
+    return () => {
+      window.removeEventListener("hashchange", f);
+      data.subscription.unsubscribe();
+    };
+  }, []);
+  async function refresh() {
+    if (!session) return;
+    setLoading(true);
+    try {
+      const [p, o, t] = await Promise.all([
+        db.from("profiles").select("*"),
+        db.from("objects").select("*").is("deleted_at", null).order("name"),
+        db
+          .from("tasks")
+          .select("*")
+          .is("deleted_at", null)
+          .order("created_at", { ascending: false }),
+      ]);
+      for (const r of [p, o, t]) if (r.error) throw r.error;
+      setPeople(p.data!);
+      setProfile(p.data!.find((x) => x.id === session.user.id) || null);
+      setObjects(o.data!);
+      setTasks(t.data!);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    void refresh();
+  }, [session?.user.id]);
+  useEffect(() => {
+    setHistory([]);
+    if (kind === "task" && id && session)
+      db.from("task_history")
+        .select("*")
+        .eq("task_id", id)
+        .order("created_at")
+        .then(({ data, error }) => {
+          if (error) setError(error.message);
+          else setHistory(data || []);
+        });
+  }, [kind, id, tasks, session?.user.id]);
+  async function action(fn: () => PromiseLike<{ error: any }>) {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const r = await fn();
+      if (r.error) throw r.error;
+      await refresh();
+      setEditor(null);
+      setComment("");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  const person = (id: string) =>
+    people.find((p) => p.id === id)?.name || "Сотрудник";
+  const badge = (s: string) => (
+    <span className={"badge " + s}>{labels[s]}</span>
+  );
+  const taskList = (list: Task[]) =>
+    list.length ? (
+      <div className="list">
+        {list.map((t) => (
+          <button className="row" key={t.id} onClick={() => go("task/" + t.id)}>
+            <div>
+              <strong>{t.title}</strong>
+              <small>
+                {objects.find((o) => o.id === t.object_id)?.name} ·{" "}
+                {person(t.assignee_id)}
+              </small>
+            </div>
+            {badge(t.status)}
+            <span aria-hidden>→</span>
+          </button>
+        ))}
+      </div>
+    ) : (
+      <div className="empty">Задач пока нет</div>
+    );
+  if (!ready) return <main>Загрузка…</main>;
+  if (!session)
+    return (
+      <main className="login">
+        <div className="brand">ОБЪЕКТЫ / ЗАДАЧИ</div>
+        <h1>
+          Всё начинается
+          <br />с ясной задачи.
+        </h1>
+        <p>Рабочее пространство строительной команды</p>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const f = new FormData(e.currentTarget);
+            void action(() =>
+              db.auth.signInWithPassword({
+                email: String(f.get("email")),
+                password: String(f.get("password")),
+              }),
+            );
+          }}
+        >
+          <h2>Вход в систему</h2>
+          <label>
+            Email
+            <input name="email" type="email" autoComplete="username" required />
+          </label>
+          <label>
+            Пароль
+            <input
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              required
+            />
+          </label>
+          {error && (
+            <p role="alert" className="error">
+              {error === "Invalid login credentials"
+                ? "Проверьте email и пароль"
+                : error}
+            </p>
+          )}
+          <button className="primary" disabled={busy}>
+            {busy ? "Входим…" : "Войти"}
+          </button>
+          <small>Доступ выдаёт администратор команды.</small>
+        </form>
+      </main>
+    );
+  return (
+    <div className="app">
+      <aside>
+        <div className="brand">
+          ОБЪЕКТЫ
+          <br />И ЗАДАЧИ<span>Рабочее пространство</span>
+        </div>
+        <nav>
+          <button
+            className={kind === "objects" || kind === "object" ? "active" : ""}
+            onClick={() => go("objects")}
+          >
+            Объекты
+          </button>
+          {!manager && (
+            <button
+              className={kind === "mine" ? "active" : ""}
+              onClick={() => go("mine")}
+            >
+              Мои задачи
+            </button>
+          )}
+        </nav>
+        <footer>
+          <strong>{profile?.name || session.user.email}</strong>
+          <small>{manager ? "Постановщик" : "Исполнитель"}</small>
+          <button onClick={() => void action(() => db.auth.signOut())}>
+            Выйти
+          </button>
+        </footer>
+      </aside>
+      <main>
+        <header>
+          <span>СТРОИТЕЛЬНАЯ КОМАНДА</span>
+          <button disabled={loading || busy} onClick={() => void refresh()}>
+            Обновить
+          </button>
+        </header>
+        {error && (
+          <div role="alert" className="error">
+            {error}
+          </div>
+        )}
+        {loading && <p role="status">Обновляем данные…</p>}
+        {!profile && !loading ? (
+          <p>
+            Для аккаунта ещё не назначена роль. Обратитесь к администратору.
+          </p>
+        ) : (
+          <>
+            {kind === "objects" && (
+              <>
+                <div className="heading">
+                  <div>
+                    <h1>Объекты</h1>
+                    <p>Стройки, задачи и общий прогресс</p>
+                  </div>
+                  {manager && (
+                    <button
+                      className="primary"
+                      onClick={() => setEditor({ kind: "object" })}
+                    >
+                      + Новый объект
+                    </button>
+                  )}
+                </div>
+                <div className="grid">
+                  {objects.map((o) => (
+                    <button
+                      className="object"
+                      key={o.id}
+                      onClick={() => go("object/" + o.id)}
+                    >
+                      <span className="eyebrow">ОБЪЕКТ</span>
+                      <h2>{o.name}</h2>
+                      <p>{o.address}</p>
+                      <div className="cardfoot">
+                        <span>
+                          {tasks.filter((t) => t.object_id === o.id).length}{" "}
+                          задач
+                        </span>
+                        <span>Открыть →</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                {!objects.length && !loading && (
+                  <div className="empty">Доступных объектов пока нет</div>
+                )}
+              </>
+            )}
+            {kind === "mine" && (
+              <>
+                <h1>Мои задачи</h1>
+                <p>Ваши задачи по всем объектам</p>
+                {taskList(
+                  tasks.filter((t) => t.assignee_id === session.user.id),
+                )}
+              </>
+            )}
+            {kind === "object" &&
+              (object ? (
+                <>
+                  <button onClick={() => go("objects")}>← Все объекты</button>
+                  <div className="heading">
+                    <div>
+                      <h1>{object.name}</h1>
+                      <p>{object.address}</p>
+                    </div>
+                    {manager && (
+                      <div className="actions">
+                        <button
+                          onClick={() =>
+                            setEditor({ kind: "object", value: object })
+                          }
+                        >
+                          Изменить
+                        </button>
+                        <button
+                          className="danger"
+                          onClick={() => {
+                            if (tasks.some((t) => t.object_id === id)) {
+                              setError("Сначала удалите задачи объекта");
+                              return;
+                            }
+                            if (confirm("Удалить объект из рабочего списка?"))
+                              void action(() =>
+                                db
+                                  .from("objects")
+                                  .update({
+                                    deleted_at: new Date().toISOString(),
+                                  })
+                                  .eq("id", id),
+                              );
+                          }}
+                        >
+                          Удалить
+                        </button>
+                        <button
+                          className="primary"
+                          onClick={() => setEditor({ kind: "task" })}
+                        >
+                          + Задача
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                  {taskList(tasks.filter((t) => t.object_id === id))}
+                </>
+              ) : (
+                <p>Объект недоступен или удалён.</p>
+              ))}
+            {kind === "task" &&
+              (task ? (
+                <>
+                  <button onClick={() => go("object/" + task.object_id)}>
+                    ← К объекту
+                  </button>
+                  <div className="heading">
+                    <h1>{task.title}</h1>
+                    {badge(task.status)}
+                  </div>
+                  <article>
+                    <p className="description">
+                      {task.description || "Описание не добавлено"}
+                    </p>
+                    <dl>
+                      <dt>Объект</dt>
+                      <dd>
+                        {objects.find((o) => o.id === task.object_id)?.name}
+                      </dd>
+                      <dt>Исполнитель</dt>
+                      <dd>{person(task.assignee_id)}</dd>
+                      <dt>Автор</dt>
+                      <dd>{person(task.author_id)}</dd>
+                      <dt>Создана</dt>
+                      <dd>{date(task.created_at)}</dd>
+                    </dl>
+                    <div className="actions">
+                      {manager && (
+                        <>
+                          <button
+                            onClick={() =>
+                              setEditor({ kind: "task", value: task })
+                            }
+                          >
+                            Редактировать
+                          </button>
+                          <button
+                            className="danger"
+                            onClick={() => {
+                              if (
+                                confirm(
+                                  "Удалить задачу из рабочего списка? История сохранится.",
+                                )
+                              )
+                                void action(() =>
+                                  db
+                                    .from("tasks")
+                                    .update({
+                                      deleted_at: new Date().toISOString(),
+                                    })
+                                    .eq("id", id),
+                                );
+                            }}
+                          >
+                            Удалить
+                          </button>
+                        </>
+                      )}
+                      {!manager &&
+                        task.assignee_id === session.user.id &&
+                        ["new", "rework", "in_progress"].includes(
+                          task.status,
+                        ) && (
+                          <button
+                            className="primary"
+                            disabled={busy}
+                            onClick={() =>
+                              void action(() =>
+                                db
+                                  .from("tasks")
+                                  .update({
+                                    status:
+                                      task.status === "in_progress"
+                                        ? "review"
+                                        : "in_progress",
+                                    transition_comment: null,
+                                  })
+                                  .eq("id", id)
+                                  .eq("status", task.status),
+                              )
+                            }
+                          >
+                            {task.status === "in_progress"
+                              ? "Отправить на проверку"
+                              : "Взять в работу"}
+                          </button>
+                        )}
+                    </div>
+                    {manager && task.status === "review" && (
+                      <div className="review">
+                        <label>
+                          Комментарий
+                          <textarea
+                            value={comment}
+                            onChange={(e) => setComment(e.target.value)}
+                            placeholder="Для возврата на доработку укажите причину"
+                          />
+                        </label>
+                        <div className="actions">
+                          <button
+                            className="primary"
+                            disabled={busy}
+                            onClick={() =>
+                              void action(() =>
+                                db
+                                  .from("tasks")
+                                  .update({
+                                    status: "accepted",
+                                    transition_comment: comment,
+                                  })
+                                  .eq("id", id)
+                                  .eq("status", "review"),
+                              )
+                            }
+                          >
+                            Принять задачу
+                          </button>
+                          <button
+                            disabled={busy || !comment.trim()}
+                            onClick={() =>
+                              void action(() =>
+                                db
+                                  .from("tasks")
+                                  .update({
+                                    status: "rework",
+                                    transition_comment: comment,
+                                  })
+                                  .eq("id", id)
+                                  .eq("status", "review"),
+                              )
+                            }
+                          >
+                            Вернуть на доработку
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </article>
+                  <h2>История статусов</h2>
+                  <ol className="timeline">
+                    {history.map((h) => (
+                      <li key={h.id}>
+                        <strong>
+                          {h.from_status ? labels[h.from_status] + " → " : ""}
+                          {labels[h.to_status]}
+                        </strong>
+                        <small>
+                          {person(h.actor_id)} · {date(h.created_at)}
+                        </small>
+                        {h.comment && (
+                          <p className="description">{h.comment}</p>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              ) : (
+                <p>Задача недоступна или удалена.</p>
+              ))}
+          </>
+        )}
+        {editor && (
+          <div className="overlay">
+            <section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="editor-title"
+            >
+              <h2 id="editor-title">
+                {editor.value
+                  ? "Редактирование"
+                  : editor.kind === "object"
+                    ? "Новый объект"
+                    : "Новая задача"}
+              </h2>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const f = new FormData(e.currentTarget);
+                  const value = Object.fromEntries(f.entries());
+                  const table = editor.kind === "object" ? "objects" : "tasks";
+                  void action(() =>
+                    editor.value
+                      ? db.from(table).update(value).eq("id", editor.value.id)
+                      : db.from(table).insert(value),
+                  );
+                }}
+              >
+                <label>
+                  Название
+                  <input
+                    name={editor.kind === "object" ? "name" : "title"}
+                    required
+                    maxLength={200}
+                    defaultValue={
+                      editor.value
+                        ? "name" in editor.value
+                          ? editor.value.name
+                          : editor.value.title
+                        : ""
+                    }
+                  />
+                </label>
+                {editor.kind === "object" ? (
+                  <label>
+                    Адрес
+                    <input
+                      name="address"
+                      required
+                      defaultValue={(editor.value as Obj)?.address || ""}
+                    />
+                  </label>
+                ) : (
+                  <>
+                    <label>
+                      Описание
+                      <textarea
+                        name="description"
+                        defaultValue={(editor.value as Task)?.description || ""}
+                      />
+                    </label>
+                    <label>
+                      Объект
+                      <select
+                        name="object_id"
+                        required
+                        defaultValue={
+                          (editor.value as Task)?.object_id ||
+                          (kind === "object" ? id : "")
+                        }
+                      >
+                        {objects.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      Исполнитель
+                      <select
+                        name="assignee_id"
+                        required
+                        defaultValue={(editor.value as Task)?.assignee_id || ""}
+                      >
+                        <option value="" disabled>
+                          Выберите сотрудника
+                        </option>
+                        {people
+                          .filter((p) => p.role === "worker")
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                  </>
+                )}
+                {error && (
+                  <p role="alert" className="error">
+                    {error}
+                  </p>
+                )}
+                <div className="actions">
+                  <button type="submit" className="primary" disabled={busy}>
+                    Сохранить
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setEditor(null)}
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
+      </main>
+    </div>
+  );
 }
-createRoot(document.getElementById('root')!).render(<App/>);
+createRoot(document.getElementById("root")!).render(<App />);
